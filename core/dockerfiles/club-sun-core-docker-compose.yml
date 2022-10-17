@@ -1,0 +1,78 @@
+version: "3.7"
+
+services:
+    nginx:
+      image: nginx
+      container_name: club-sun-nginx
+      restart: unless-stopped
+      environment:
+        VIRTUAL_PORT: 80
+        LETSENCRYPT_EMAIL: lexxx020@ya.ru 
+      volumes:
+        - ../git:/var/www
+        - ./nginx:/etc/nginx/conf.d
+      working_dir: /var/www
+      links:
+        - club-sun-php
+        - nginx-proxy
+      env_file:
+          - web.env
+      networks:
+        - net-nginx
+        - net-club-sun
+    club-sun-php:
+        build:
+          context: ./php
+          dockerfile: Dockerfile
+        image: club-sun-php
+        restart: unless-stopped
+        container_name: club-sun-php
+        working_dir: /var/www
+        environment:
+            DB_HOST: club-sun-mysql
+            DB_DATABASE: club-sun
+            DB_USERNAME: $DB_USERNAME
+            DB_PASSWORD: $DB_PASSWORD
+        env_file:
+          - app.env
+        volumes:
+          - ./supervisor/:/etc/supervisor/conf.d/
+          - ../git:/var/www
+        command: sh -c " echo '* * * * * php /var/www/artisan schedule:run >>/dev/null 2>&1' | crontab && \
+                  chmod -R 777 storage && chmod -R 777  bootstrap/cache &&\
+                  cp .env.example .env &&\
+                  composer install --prefer-dist &&\
+                  php artisan migrate --force  && php artisan optimize:clear && php artisan key:generate &&\
+                  service supervisor start && supervisorctl reread && supervisorctl update && supervisorctl start laravel-worker:* &&\
+                  php-fpm"
+        links:
+          - club-sun-mysql
+        networks:
+            - net-club-sun
+
+
+    club-sun-mysql:
+        image:  mysql:8.0
+        container_name: club-sun-mysql
+        environment:
+            MYSQL_ROOT_PASSWORD: $DB_PASSWORD
+            MYSQL_DATABASE: club-sun
+        volumes:
+          - club-sun-mysql:/var/lib/mysql
+          - ./mysql:/root/mysql
+        networks:
+            - net-club-sun
+            - net-openssh 
+
+networks:
+  net-club-sun:
+        driver: bridge
+        name: net-club-sun
+  net-nginx:
+    external: true
+    name: net-nginx
+  net-openssh:
+    external: true
+    name: net-openssh      
+volumes:
+    club-sun-mysql:

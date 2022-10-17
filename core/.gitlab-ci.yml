@@ -1,0 +1,124 @@
+stages:
+  - test
+  - build
+  - deploy
+  - exec
+
+variables:
+    D_PROJECT_NAME: '$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME'
+    F_PROJECT_NAME: '$CI_PROJECT_ROOT_NAMESPACE/$CI_PROJECT_NAME/$CI_COMMIT_BRANCH/'
+
+image: $CI_REGISTRY/club-sun/core/php8.1-composer
+
+phpunit:
+  stage: test
+  services:
+  - name: mysql:8
+    alias: testing_mysql
+  variables:
+    MYSQL_DATABASE: club_sun_test
+    MYSQL_ROOT_PASSWORD: "$TEST_DB_PASSWORD"
+    DB_HOST: mysql
+    DB_DATABASE: club_sun_test
+    DB_CONNECTION: testing_mysql
+    DB_USERNAME: root
+    DB_PASSWORD: "$TEST_DB_PASSWORD"
+    XDEBUG_MODE: coverage
+  script:
+    - composer global require "squizlabs/php_codesniffer=*"
+    - composer install --prefer-dist --no-ansi --no-interaction --no-progress --no-scripts
+    - cp .env.testing.example .env.testing
+    - php artisan --env=testing migrate:fresh
+    - ./vendor/bin/phpunit --coverage-text --colors=never --log-junit report.xml
+  tags:
+    - docker
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+  except:
+    refs:
+      - devci
+      - devci-test
+      - stage
+      - stage-ci
+    variables:
+      - $EXEC
+
+build-to-stage:
+  stage: build
+  script:
+    - echo  "$D_PROJECT_NAME"       
+    - mkdir -p /srv/pr/$F_PROJECT_NAME/docker/ || true
+    - mkdir -p /srv/pr/$F_PROJECT_NAME/git/ || true
+    - rsync -av --no-perms --no-owner --no-group --exclude ".git*" $CI_PROJECT_DIR/dockerfiles/  /srv/pr/$F_PROJECT_NAME/docker/
+    - cd /srv/pr/$F_PROJECT_NAME/docker/
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml down || true
+    - rsync -av --no-perms --no-owner --no-group --delete --exclude ".git*" --exclude "docker*" --exclude "vendor" --exclude "storage"  $CI_PROJECT_DIR/  /srv/pr/$F_PROJECT_NAME/git/
+    - rsync -av --no-perms --no-owner --no-group --exclude ".git*"   $CI_PROJECT_DIR/storage/  /srv/pr/$F_PROJECT_NAME/git/storage/
+    - cd /srv/pr/$F_PROJECT_NAME/docker/
+    - cp $DOCKER_ENV_FILE .env
+    - echo -e '\nCOMPOSE_PROJECT_NAME='"$D_PROJECT_NAME" >> .env
+    - cp $WEB_ENV_FILE web.env
+    - echo -e  VIRTUAL_HOST="$D_PROJECT_NAME".y7jasha6g5cdsa.ru >> web.env
+    - echo -e  LETSENCRYPT_HOST="$D_PROJECT_NAME".y7jasha6g5cdsa.ru >> web.env
+    - cp $APP_ENV_FILE app.env
+    - echo -e  APP_URL="$D_PROJECT_NAME".y7jasha6g5cdsa.ru >> app.env
+  tags:
+    - shell
+  only:  
+    - stage
+    - stage-ci
+  except:
+    variables:
+      - $EXEC
+
+build-docker-image:
+  stage: build
+  script:
+    - cd /srv/pr/$F_PROJECT_NAME/docker/
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml down || true 
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml  build  --force-rm
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml up -d 
+  except:
+    variables:
+      - $EXEC
+  only:
+    changes:
+      - 'dockerfiles/**/Dockerfile'
+    refs:
+      - stage
+  tags:
+    - shell 
+
+deploy-to-stage:
+  stage: deploy
+  script:
+    - cd /srv/pr/$F_PROJECT_NAME/docker/
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml down || true
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml up -d
+    - sleep 10
+    - docker compose -f ./$CI_PROJECT_ROOT_NAMESPACE-$CI_PROJECT_NAME-docker-compose.yml logs
+  tags:
+    - shell
+  environment:
+    name: $CI_COMMIT_BRANCH
+    url: https://$D_PROJECT_NAME.y7jasha6g5cdsa.ru
+  only:    
+    - stage
+    - stage-ci
+  except:
+    variables:
+      - $EXEC 
+
+EXEC: 
+  script:
+    - docker exec club-sun-php $EXEC           
+  stage: exec
+  only:
+    variables:
+      - $EXEC
+  tags:
+    - shell
+cache:
+  untracked: true    
